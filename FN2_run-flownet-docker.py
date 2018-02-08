@@ -8,6 +8,7 @@ from scipy import misc
 import caffe
 import tempfile
 from math import ceil
+from datetime import datetime, timedelta
 
 
 def dockerize_filepath(path):
@@ -51,6 +52,7 @@ parser.add_argument('img1', help='image 1 path')
 parser.add_argument('out',  help='output filename')
 parser.add_argument('--gpu',  help='gpu id to use (0, 1, ...)', default=0, type=int)
 parser.add_argument('--verbose',  help='whether to output all caffe logging', action='store_true')
+parser.add_argument('--skipCheck', help='whether to check for NaN in blobs after running the network', action='store_true')
 
 args = parser.parse_args()
 
@@ -66,13 +68,31 @@ else:
                  [dockerize_filepath(args.img1),]]
   output_files = [dockerize_filepath(args.out),]
 
+totalFileSetupTime = 0.0
+totalCaffeSetupTime = 0.0
+totalCaffeTime = 0.0
+imageCaffeTime = 0.0
+totalCheckTime = 0.0
+imageCheckTime = 0.0
+totalFileOutputTime = 0.0
+totalTime = 0.0
+
+startTime = datetime.now()
+caffeSetupStartTime = datetime.now()
+caffeSetupEndTime = datetime.now()
+caffeStartTime = datetime.now()
+checkEndTime = datetime.now()
+fileOutputTime = 0.0
 for i in range(len(output_files)):
   in0 = input_files[0][i]
   in1 = input_files[1][i]
   out = output_files[i]
+  imageCaffeTime = 0.0
+  imageCheckTime = 0.0
+
+  startTime = datetime.now()
   if(not os.path.isfile(in0)): raise BaseException('img0 does not exist: '+in0)
   if(not os.path.isfile(in1)): raise BaseException('img1 does not exist: '+in1)
-
   num_blobs = 2
   input_data = []
   img0 = misc.imread(in0)
@@ -105,11 +125,14 @@ for i in range(len(output_files)):
         tmp.write(line)
     tmp.flush()
 
+    caffeSetupStartTime = datetime.now()
     if not args.verbose:
         caffe.set_logging_disabled()
     caffe.set_device(args.gpu)
     caffe.set_mode_gpu()
     net = caffe.Net(tmp.name, args.caffemodel, caffe.TEST)
+  else:
+    caffeSetupStartTime = datetime.now()
 
   input_dict = {}
   for blob_idx in range(num_blobs):
@@ -121,20 +144,28 @@ for i in range(len(output_files)):
   #
   print('Network forward pass using %s.' % args.caffemodel)
   i = 1
+  caffeSetupEndTime = datetime.now()
   while i<=5:
       i+=1
 
+      caffeStartTime = datetime.now()
       net.forward(**input_dict)
+      caffeEndTime = datetime.now()
+      imageCaffeTime = imageCaffeTime + (caffeEndTime - caffeStartTime).total_seconds()
 
       containsNaN = False
-      for name in net.blobs:
-          blob = net.blobs[name]
-          has_nan = np.isnan(blob.data[...]).any()
-
-          if has_nan:
-              print('blob %s contains nan' % name)
-              containsNaN = True
-
+      if not args.skipCheck:
+          for name in net.blobs:
+              blob = net.blobs[name]
+              has_nan = np.isnan(blob.data[...]).any()
+              
+              if has_nan:
+                  print('blob %s contains nan' % name)
+                  containsNaN = True
+          checkEndTime = datetime.now()
+          imageCheckTime = imageCheckTime + (checkEndTime - caffeEndTime).total_seconds()
+      else:
+          checkEndTime = datetime.now()
       if not containsNaN:
           print('Succeeded.')
           break
@@ -144,4 +175,18 @@ for i in range(len(output_files)):
   blob = np.squeeze(net.blobs['predict_flow_final'].data).transpose(1, 2, 0)
 
   writeFlow(out, blob)
+  finished = datetime.now()
+  fileSetupTime = (caffeSetupStartTime - startTime).total_seconds()
+  totalFileSetupTime = totalFileSetupTime + fileSetupTime
+  caffeSetupTime = (caffeSetupEndTime - caffeSetupStartTime).total_seconds()
+  totalCaffeSetupTime = totalCaffeSetupTime + caffeSetupTime
+  totalCaffeTime = totalCaffeTime + imageCaffeTime
+  totalCheckTime = totalCheckTime + imageCheckTime
+  fileOutputTime = (finished - checkEndTime).total_seconds()
+  totalFileOutputTime = totalFileOutputTime + fileOutputTime
+  imageTotalTime = (finished - startTime).total_seconds()
+  totalTime = totalTime + imageTotalTime
+  
+  print('{}: File setup: {:.6f}; caffe setup: {:.6f}; caffe: {:.6f}; check: {:.6f}; file output: {:.6f}; total: {:.6f}'.format(i, fileSetupTime, caffeSetupTime, imageCaffeTime, imageCheckTime, fileOutputTime, imageTotalTime))
 
+print('TOTAL: File setup: {:.6f}; caffe setup: {:.6f}; caffe: {:.6f}; check: {:.6f}; file output: {:.6f}; total: {:.6f}'.format(totalFileSetupTime, totalCaffeSetupTime, totalCaffeTime, totalCheckTime, totalFileOutputTime, totalTime))

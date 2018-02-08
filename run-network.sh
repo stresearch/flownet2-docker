@@ -78,11 +78,14 @@ fun__debug_printf () {
   fi
 }
 
+SKIP_CHECK=
+
 ## Parse arguments into parameters
-while getopts g:n:vh OPTION; do
+while getopts g:hn:sv OPTION; do
   case "${OPTION}" in
     g) GPU_IDX=$OPTARG;;
     n) NETWORK=$OPTARG;;
+    s) SKIP_CHECK="--skipCheck";;
     v) VERBOSITY=`expr $VERBOSITY + 1`;;
     h) fun__print_usage; exit `:`;;
     [?]) fun__print_usage; fun__die;;
@@ -148,27 +151,50 @@ fun__debug_printf "Working dir:     ${WORKDIR}";
 fun__debug_printf "First input:     ${FIRST_INPUT}";
 fun__debug_printf "Second input:    ${SECOND_INPUT}";
 fun__debug_printf "Output:          ${OUTPUT}";
-
+fun__debug_printf "Skip NaN check:  ${SKIP_CHECK}";
 
 ## Run docker container
 #  - "--device" lines map a specified host GPU into the contained
 #  - "-v" allows the container the read from/write to the current $PWD
 #  - "-w" executes "cd" in the container (each network has a folder)
 ## Note: The ugly conditional only switches stdout on/off.
-if test $VERBOSITY -ge 2; then
-  nvidia-docker run \
-    --rm \
-    --volume "${PWD}:/input-output:rw" \
-    --workdir "${WORKDIR}" \
-    -it "$CONTAINER" /bin/bash -c "cd ..; source set-env.sh; cd -; python run-flownet-docker.py --verbose --gpu ${GPU_IDX} ${WEIGHTS} ${DEPLOYPROTO} ${FIRST_INPUT} ${SECOND_INPUT} ${OUTPUT}"
-else
-  nvidia-docker run \
-    --rm \
-    --volume "${PWD}:/input-output:rw" \
-    --workdir "${WORKDIR}" \
-    -it "$CONTAINER" /bin/bash -c "cd ..; source set-env.sh; cd -; python run-flownet-docker.py --gpu ${GPU_IDX} ${WEIGHTS} ${DEPLOYPROTO} ${FIRST_INPUT} ${SECOND_INPUT} ${OUTPUT}"
-    > /dev/null;
+
+diva_link=`readlink /diva`
+if [ ! -z $diva_link ] ; then
+    diva_link="--volume ${diva_link}:/diva:rw"
 fi
+
+
+VERBOSE=
+
+if test $VERBOSITY -ge 2; then
+    VERBOSE=--verbose
+fi
+echo nvidia-docker run \
+     --rm \
+     ${diva_link} \
+     --workdir "${WORKDIR}" \
+     -it "$CONTAINER" /bin/bash -c "\"cd ..; source set-env.sh; cd -; python run-flownet-docker.py ${VERBOSE} ${SKIP_CHECK} --gpu ${GPU_IDX} ${WEIGHTS} ${DEPLOYPROTO} ${FIRST_INPUT} ${SECOND_INPUT} ${OUTPUT}\""
+nvidia-docker run \
+              --rm \
+              ${diva_link} \
+              --workdir "${WORKDIR}" \
+              -it "$CONTAINER" /bin/bash -c "cd ..; source set-env.sh; cd -; python run-flownet-docker.py ${VERBOSE} ${SKIP_CHECK} --gpu ${GPU_IDX} ${WEIGHTS} ${DEPLOYPROTO} ${FIRST_INPUT} ${SECOND_INPUT} ${OUTPUT}"
+#else
+#  echo nvidia-docker run \
+#       --rm \
+#       --volume "${PWD}:/input-output:rw" \
+#       ${diva_link} \
+#       --workdir "${WORKDIR}" \
+#       -it "$CONTAINER" /bin/bash -c "cd ..; source set-env.sh; cd -; python run-flownet-docker.py --gpu ${GPU_IDX} ${WEIGHTS} ${DEPLOYPROTO} ${FIRST_INPUT} ${SECOND_INPUT} ${OUTPUT}"
+#  nvidia-docker run \
+#                --rm \
+#                --volume "${PWD}:/input-output:rw" \
+#                "${diva_link}" \
+#                --workdir "${WORKDIR}" \
+#                -it "$CONTAINER" /bin/bash -c "cd ..; source set-env.sh; cd -; python run-flownet-docker.py --gpu ${GPU_IDX} ${WEIGHTS} ${DEPLOYPROTO} ${FIRST_INPUT} ${SECOND_INPUT} ${OUTPUT}"
+#  > /dev/null;
+#fi
 
 ## Bye!
 fun__debug_printf "Done!";
